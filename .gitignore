@@ -1,0 +1,7 @@
+node_modules/
+*.log
+.env
+.env.*
+.DS_Store
+# Saved result pages can contain your name, email and session data.
+*.html

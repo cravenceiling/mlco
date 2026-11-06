@@ -1,0 +1,49 @@
+{
+  "name": "mlco",
+  "version": "0.3.0",
+  "description": "Search Mercado Libre Colombia from the terminal or an MCP client, using your own browser session",
+  "license": "MIT",
+  "author": "cravenceiling",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cravenceiling/mlco.git"
+  },
+  "homepage": "https://github.com/cravenceiling/mlco#readme",
+  "bugs": "https://github.com/cravenceiling/mlco/issues",
+  "type": "module",
+  "keywords": [
+    "mercadolibre",
+    "mercado-libre",
+    "colombia",
+    "cli",
+    "mcp",
+    "playwright",
+    "price-comparison"
+  ],
+  "os": [
+    "linux"
+  ],
+  "engines": {
+    "bun": ">=1.2"
+  },
+  "bin": {
+    "mlco": "src/cli.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "prepare": "husky"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "playwright-core": "1.64.1",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.4",
+    "husky": "^9.1.7",
+    "typescript": "^7.0.2"
+  }
+}
