@@ -4,26 +4,31 @@ import { z } from "zod";
 export const Product = z.object({
   id: z.string(),
   title: z.string(),
-  price: z.number().describe("Current price, integer COP"),
-  currency: z.string(),
-  originalPrice: z.number().nullable().describe("Pre-discount price when the card shows one"),
-  discountPct: z.number().nullable(),
-  installments: z.string().nullable(),
-  seller: z.string().nullable(),
-  officialStore: z.boolean(),
-  rating: z.number().nullable(),
-  sold: z.string().nullable().describe('e.g. "+100 vendidos"'),
-  condition: z.string().describe('"Nuevo" unless the card says otherwise'),
-  shipping: z.string().nullable(),
-  freeShipping: z.boolean(),
-  international: z.string().nullable(),
-  promotions: z.array(z.string()),
-  purchaseOptions: z.string().nullable().describe('Catalog cards: "3 opciones de compra"; price is the cheapest'),
-  catalogProductId: z.string().nullable(),
+  price: z.number().describe("Current cash price, integer COP; coupons and card-only discounts are not applied"),
+  currency: z.string().optional().describe("Only present when the price is not in COP"),
+  originalPrice: z.number().optional().describe("Pre-discount price when the card shows one"),
+  discountPct: z.number().optional(),
+  condition: z.string().describe("new, used or refurbished"),
+  officialStore: z
+    .string()
+    .optional()
+    .describe("Official store name. Search pages name no other sellers; get_items returns the seller of any listing"),
+  rating: z.number().optional(),
+  sold: z.string().optional().describe('e.g. "+100 vendidos"'),
+  shipping: z.string().optional().describe('e.g. "Envío gratis"'),
+  international: z.string().optional().describe('Cross-border listing, e.g. "Internacional USA"'),
+  promotions: z.array(z.string()).optional(),
+  purchaseOptions: z.string().optional().describe('Catalog cards: "3 opciones de compra"; price is the cheapest'),
+  catalogProductId: z.string().optional(),
+  installments: z.string().optional().describe("Only with include: installments"),
+  image: z.string().optional().describe("Only with include: image"),
   url: z.string(),
-  image: z.string().nullable(),
 });
 export type Product = z.infer<typeof Product>;
+
+/** Card fields left out unless asked for: rarely useful to an agent, and they cost tokens on every listing. */
+export const EXTRA_FIELDS = ["installments", "image"] as const;
+export type ExtraField = (typeof EXTRA_FIELDS)[number];
 
 export type SearchPage = {
   products: Product[];
@@ -40,10 +45,10 @@ const PICTURE = (id: string) => `https://http2.mlstatic.com/D_Q_NP_${id}-O.webp`
 const cop = (n: number) => `$${n.toLocaleString("es-CO")}`;
 
 /**
- * Pull the search state out of the page. Signed-in pages stream it as `optimizedResponse` inside
- * `_n.ctx.s["nr"].q("…")`; signed-out pages inline it as `initialState` in `_n.ctx.r = {…}`.
+ * Pull the page state out of a search or item page. Signed-in search pages stream it as `optimizedResponse`
+ * inside `_n.ctx.s["nr"].q("…")`; other pages inline it as `initialState` in `_n.ctx.r = {…}`.
  */
-export function extractSearchState(html: string): Json | null {
+export function extractPageState(html: string): Json | null {
   for (const [, script] of html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)) {
     if (script!.includes("optimizedResponse") && script!.includes('q("')) {
       const raw = script!.slice(script!.indexOf('q("') + 3, script!.lastIndexOf('")'));
@@ -59,7 +64,7 @@ export function extractSearchState(html: string): Json | null {
 }
 
 /** Parse the JSON object that follows `key` in `s`. */
-function objectAfter(s: string, key: string): Json {
+export function objectAfter(s: string, key: string): Json {
   const start = s.indexOf("{", s.indexOf(key));
   return JSON.parse(s.slice(start, matchingBrace(s, start) + 1));
 }
@@ -80,8 +85,42 @@ function matchingBrace(s: string, start: number): number {
   throw new Error("Unterminated search payload");
 }
 
+/** Map Mercado Libre's condition label ("Nuevo", "Usado", "Reacondicionado") to the `condition` filter's words. */
+export function normalizeCondition(text: string | undefined): string {
+  if (!text || /nuevo|^new$/i.test(text)) return "new";
+  if (/usado|^used$/i.test(text)) return "used";
+  if (/reacondicionado|refurbished/i.test(text)) return "refurbished";
+  return text.toLowerCase();
+}
+
+/**
+ * Drop keys whose value is null, undefined, false, "" or an empty array/object, recursively.
+ * Agents pay for every token, so absent data stays absent instead of spelled out as null.
+ */
+export function prune<T>(value: T): T {
+  if (Array.isArray(value)) return value.map(prune) as T;
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) {
+      const p = prune(v);
+      const empty =
+        p == null || p === false || p === "" || (typeof p === "object" && Object.keys(p as object).length === 0);
+      if (!empty) out[k] = p;
+    }
+    return out as T;
+  }
+  return value;
+}
+
+/** Leave out the extra card fields the caller did not ask for. */
+export function withExtras(p: Product, include: readonly ExtraField[] = []): Product {
+  const out = { ...p };
+  for (const f of EXTRA_FIELDS) if (!include.includes(f)) delete out[f];
+  return out;
+}
+
 /** Render a polycard template like "{icon} {label} {label2}" to plain text. */
-function templateText(c: Json): string | null {
+export function templateText(c: Json): string | null {
   if (!c) return null;
   let text: string = c.text ?? "";
   for (const v of c.values ?? []) {
@@ -114,34 +153,35 @@ export function toProduct(card: Json): Product {
     .map((v: Json) => v.label.text);
   const rating = reviewLabels.find((t) => /^\d(\.\d)?$/.test(t));
   const sold = reviewLabels.find((t) => t.includes("vendido"));
-  const shipping = (comps.shipping_v2 ?? []).map((s: Json) => s.alt_text || templateText(s)).filter(Boolean).join(" · ") || null;
+  const shipping = (comps.shipping_v2 ?? []).map((s: Json) => s.alt_text || templateText(s)).filter(Boolean).join(" · ") || undefined;
+  const currency = price.current_price.currency ?? "COP";
   const pictureId = card.pictures?.pictures?.[0]?.id;
-  return {
+  // Search cards only carry a seller component for official stores.
+  const officialStore = comps.seller?.text?.includes("icon_cockade") ? (templateText(comps.seller) ?? undefined) : undefined;
+  return prune({
     id: meta.id || meta.product_id || meta.user_product_id,
     title: comps.title.text,
     price: price.current_price.value,
-    currency: price.current_price.currency ?? "COP",
-    originalPrice: previous ?? null,
-    discountPct: price.discount_pct ?? null,
-    installments: templateText(price.installments),
-    seller: templateText(comps.seller),
-    officialStore: !!comps.seller?.text?.includes("icon_cockade"),
-    rating: rating ? Number(rating) : null,
-    sold: sold?.replace(/^[\s|]+/, "") ?? null,
-    condition: comps.item_condition?.text ?? "Nuevo",
+    currency: currency === "COP" ? undefined : currency,
+    originalPrice: previous,
+    discountPct: price.discount_pct,
+    condition: normalizeCondition(comps.item_condition?.text),
+    officialStore,
+    rating: rating ? Number(rating) : undefined,
+    sold: sold?.replace(/^[\s|]+/, ""),
     shipping,
-    freeShipping: !!shipping?.toLowerCase().includes("gratis"),
-    international: comps.cbt?.alt_text ?? null,
+    international: comps.cbt?.alt_text,
     promotions: (comps.promotions ?? []).map((p: Json) => p.text),
-    purchaseOptions: comps.purchase_options?.text ?? null,
-    catalogProductId: meta.product_id ?? null,
+    purchaseOptions: comps.purchase_options?.text,
+    catalogProductId: meta.product_id,
+    installments: templateText(price.installments) ?? undefined,
+    image: pictureId ? PICTURE(pictureId) : undefined,
     url: shortUrl(meta),
-    image: pictureId ? PICTURE(pictureId) : null,
-  };
+  });
 }
 
 export function parseSearchPage(html: string): SearchPage | null {
-  const state = extractSearchState(html);
+  const state = extractPageState(html);
   if (!state) return null;
   // Skip sponsored cards and anything that is not a priced listing.
   const listings = (state.results ?? [])

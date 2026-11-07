@@ -1,6 +1,6 @@
 {
   "name": "mlco",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Search Mercado Libre Colombia from the terminal or an MCP client, using your own browser session",
   "license": "MIT",
   "author": "cravenceiling",
@@ -34,6 +34,7 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "test": "bun test",
     "prepare": "husky"
   },
   "dependencies": {
