@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { chromium, errors, type Browser, type BrowserContext, type Page } from "playwright-core";
 import { installedBrowsers, type BrowserName } from "./browsers";
 import { loadCookies, type CookieOptions } from "./cookies";
+import { parseItemPage, type Item, type ItemField } from "./item";
 import { parseSearchPage, type Product } from "./parse";
 
 const BASE = "https://listado.mercadolibre.com.co";
@@ -191,7 +192,7 @@ export class Session {
         skipped += result.skipped;
         for (const p of result.products) {
           // The free-shipping filter guarantees it even when a card omits the label.
-          if (!products.has(p.id)) products.set(p.id, { ...p, freeShipping: p.freeShipping || !!o.freeShipping });
+          if (!products.has(p.id)) products.set(p.id, o.freeShipping && !p.shipping ? { ...p, shipping: "Envío gratis" } : p);
         }
         if (!result.products.length || n >= result.lastPage) break;
       }
@@ -202,28 +203,110 @@ export class Session {
     if (skipped) console.error(`mlco: skipped ${skipped} listing(s) that could not be read.`);
     return { query, url: buildUrl(query, 1, o), total, products: [...products.values()].slice(0, limit) };
   }
+
+  /**
+   * Open each listing and read its seller, stock, shipping, warranty and specs. Runs up to two tabs at once,
+   * at a human pace within each. One failed listing is reported in `errors` instead of failing the rest;
+   * a captcha or sign-in wall fails the whole call, since every later page would hit it too.
+   */
+  async items(inputs: string[], include: readonly ItemField[] = ["specs", "description"]): Promise<ItemsResult> {
+    if (!inputs.length || inputs.length > MAX_ITEMS) throw new RangeError(`Pass 1 to ${MAX_ITEMS} items`);
+    const results: (Item | ItemError)[] = new Array(inputs.length);
+    const pending: { i: number; url: string }[] = [];
+    inputs.forEach((input, i) => {
+      try {
+        pending.push({ i, url: itemPageUrl(input) });
+      } catch (e) {
+        results[i] = { input, error: (e as Error).message };
+      }
+    });
+    let next = 0;
+    const worker = () =>
+      this.withPage(async (page) => {
+        for (let first = true; next < pending.length; first = false) {
+          const { i, url } = pending[next++]!;
+          if (!first) await jitter();
+          try {
+            results[i] = await loadItemPage(page, url, include);
+          } catch (e) {
+            if (e instanceof BlockedError) throw e;
+            results[i] = { input: inputs[i]!, error: e instanceof Error ? e.message.split("\n")[0]! : String(e) };
+          }
+        }
+      });
+    await Promise.all(Array.from({ length: Math.min(MAX_OPEN_PAGES, pending.length) }, worker));
+    return {
+      items: results.filter((r): r is Item => !("error" in r)),
+      errors: results.filter((r): r is ItemError => "error" in r),
+    };
+  }
 }
 
-async function loadSearchPage(page: Page, url: string) {
+/** Ten listings take about half a minute, which stays under typical MCP client timeouts. */
+export const MAX_ITEMS = 10;
+export type ItemError = { input: string; error: string };
+export type ItemsResult = { items: Item[]; errors: ItemError[] };
+
+function throwIfBlocked(page: Page) {
+  if (/\/captcha\/|\/gz\/account-verification/.test(page.url())) {
+    throw new BlockedError(
+      "Mercado Libre asked for verification. Open mercadolibre.com.co in your browser, complete it, and retry.",
+    );
+  }
+  if (page.url().includes("/login")) {
+    throw new BlockedError("Mercado Libre asked to sign in. Sign in to mercadolibre.com.co in your browser and retry.");
+  }
+}
+
+/** Open `url` and return its HTML once `ready` matches (or once the HTML is parsed), retrying timeouts. */
+async function loadPage(page: Page, url: string, ready?: string): Promise<string> {
   for (let attempt = 1; ; attempt++) {
     try {
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: 40_000 });
-      await page.waitForSelector(".andes-money-amount__fraction, .ui-search-rescue", { timeout: 20_000 });
-      break;
+      if (ready) await page.waitForSelector(ready, { timeout: 20_000 });
+      else throwIfBlocked(page);
+      return await page.content();
     } catch (e) {
-      if (/\/captcha\/|\/gz\/account-verification/.test(page.url())) {
-        throw new BlockedError(
-          "Mercado Libre asked for verification. Open mercadolibre.com.co in your browser, complete it, and retry.",
-        );
-      }
-      if (page.url().includes("/login")) {
-        throw new BlockedError("Mercado Libre asked to sign in. Sign in to mercadolibre.com.co in your browser and retry.");
-      }
+      throwIfBlocked(page);
       if (!(e instanceof errors.TimeoutError) || attempt === 3) throw e;
       await sleep(2000 * attempt);
     }
   }
-  const parsed = parseSearchPage(await page.content());
+}
+
+async function loadSearchPage(page: Page, url: string) {
+  const parsed = parseSearchPage(await loadPage(page, url, ".andes-money-amount__fraction, .ui-search-rescue"));
   if (!parsed) throw new Error(`Search results not found on ${page.url()}; the page layout may have changed.`);
   return parsed;
+}
+
+const ITEM_ID = /^MCO-?(\d{6,})$/i;
+const ML_HOST = /(^|\.)mercadolibre\.com\.co$/;
+
+/**
+ * Turn an item id (MCO4097589348, MCO-4097589348) or a mercadolibre.com.co URL into the page to open.
+ * Other hosts are refused: the browser carries the user's Mercado Libre session.
+ */
+export function itemPageUrl(input: string): string {
+  const s = input.trim();
+  const id = ITEM_ID.exec(s);
+  if (id) return `https://articulo.mercadolibre.com.co/MCO-${id[1]}`;
+  let url: URL;
+  try {
+    url = new URL(s);
+  } catch {
+    throw new RangeError(`Not an item id or URL: ${input}`);
+  }
+  if (url.protocol !== "https:" || !ML_HOST.test(url.hostname)) {
+    throw new RangeError(`Only https://…mercadolibre.com.co URLs are allowed: ${input}`);
+  }
+  return url.toString();
+}
+
+async function loadItemPage(page: Page, url: string, include: readonly ItemField[]): Promise<Item> {
+  // Item pages inline their whole state in the server HTML, so there is nothing to wait for.
+  const html = await loadPage(page, url);
+  const item = parseItemPage(html, include);
+  if (!item) throw new Error(`No listing on ${page.url()}; it may have been removed or paused.`);
+  return item;
 }

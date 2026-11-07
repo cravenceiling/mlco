@@ -2,13 +2,25 @@
 import { parseArgs } from "node:util";
 import pkg from "../package.json" with { type: "json" };
 import { COOKIE_SOURCES, type CookieOptions } from "./cookies";
-import type { Product } from "./parse";
-import { BlockedError, CONDITIONS, MAX_LIMIT, SORTS, Session, type SearchOptions, type SearchResult } from "./search";
+import { ITEM_FIELDS, type ItemField } from "./item";
+import { EXTRA_FIELDS, withExtras, type ExtraField, type Product } from "./parse";
+import {
+  BlockedError,
+  CONDITIONS,
+  MAX_ITEMS,
+  MAX_LIMIT,
+  SORTS,
+  Session,
+  type ItemsResult,
+  type SearchOptions,
+  type SearchResult,
+} from "./search";
 
 const USAGE = `mlco ${pkg.version}: search Mercado Libre Colombia from the terminal
 
 Usage:
   mlco search <query> [options]
+  mlco item <id|url>... [options]        open up to ${MAX_ITEMS} listings: seller, stock, shipping, warranty, specs
   mlco mcp [--browser B] [--profile P]   run an MCP server over stdio
 
 Search options:
@@ -18,7 +30,12 @@ Search options:
       --max COP          maximum price, in Colombian pesos
       --condition C      ${Object.keys(CONDITIONS).join(" | ")}
       --free-shipping    only listings with free shipping
+      --include F,...    extra JSON fields: ${EXTRA_FIELDS.join(", ")}
       --json             print JSON instead of a table
+
+Item options:
+      --include F,...    ${ITEM_FIELDS.join(", ")} (default specs,description)
+      --json             print JSON instead of a summary
 
 Session options:
       --browser B        ${COOKIE_SOURCES.join(" | ")} (default auto)
@@ -29,7 +46,7 @@ Session options:
 
 class UsageError extends Error {}
 
-const cop = (n: number | null) => (n == null ? "" : `$${n.toLocaleString("es-CO")}`);
+const cop = (n: number | null | undefined) => (n == null ? "" : `$${n.toLocaleString("es-CO")}`);
 
 function oneOf<T extends string>(value: string | undefined, allowed: readonly T[], flag: string): T | undefined {
   if (value === undefined) return undefined;
@@ -44,17 +61,46 @@ function positiveInt(value: string | undefined, flag: string): number | undefine
   return n;
 }
 
+function fieldList<T extends string>(value: string | undefined, allowed: readonly T[], fallback: T[]): T[] {
+  if (value === undefined) return fallback;
+  const fields = value.split(",").map((f) => f.trim()).filter(Boolean);
+  for (const f of fields) oneOf(f, allowed, "--include");
+  return fields as T[];
+}
+
+function printItems(r: ItemsResult) {
+  for (const it of r.items) {
+    const s = it.seller;
+    const disc = it.discountPct ? ` (-${it.discountPct}%, was ${cop(it.originalPrice)})` : "";
+    console.log(`${it.title}\n  ${cop(it.price)}${disc} · ${it.condition} · stock ${it.stock ?? "?"} · ${it.sold ?? 0} sold`);
+    const lider = s.mercadoLider ? `MercadoLíder ${s.mercadoLider}` : "";
+    console.log(`  seller: ${[s.name, s.officialStore && "official store", lider, s.reputation, s.sales].filter(Boolean).join(" · ")}`);
+    for (const o of it.shipping.options) {
+      const cost = o.cost === 0 ? "free" : o.cost != null ? cop(o.cost) : "";
+      console.log(`  ${[o.text, cost, o.note].filter(Boolean).join(" · ")}${it.shipping.to ? ` (to ${it.shipping.to})` : ""}`);
+    }
+    if (it.international?.note) console.log(`  ${it.international.note}`);
+    console.log(`  ${it.warranty ?? "warranty not stated"}`);
+    if (it.specs) {
+      const specs = Object.entries(it.specs).map(([k, v]) => `${k}: ${v}`);
+      console.log(`  ${specs.join(" · ")}`);
+    }
+    console.log(`  ${it.url}\n`);
+  }
+  for (const e of r.errors) console.error(`mlco: ${e.input}: ${e.error}`);
+}
+
 function printTable(r: SearchResult) {
   console.log(`'${r.query}': ${r.total ?? "?"} results on Mercado Libre CO, showing ${r.products.length}`);
   console.log(`${r.url}\n`);
   r.products.forEach((p: Product, i) => {
     const disc = p.discountPct ? ` (-${p.discountPct}%, was ${cop(p.originalPrice)})` : "";
     const tags = [
-      p.condition !== "Nuevo" && p.condition,
-      p.officialStore && "official store",
+      p.condition !== "new" && p.condition,
+      p.officialStore && `official store ${p.officialStore}`,
       p.rating && `★${p.rating}`,
       p.sold,
-      p.freeShipping ? "free shipping" : p.shipping,
+      p.shipping,
       p.international,
       p.purchaseOptions,
     ].filter(Boolean);
@@ -77,6 +123,7 @@ async function main(argv: string[]) {
       "free-shipping": { type: "boolean" },
       browser: { type: "string" },
       profile: { type: "string" },
+      include: { type: "string" },
       json: { type: "boolean" },
       help: { type: "boolean", short: "h" },
       version: { type: "boolean", short: "v" },
@@ -91,6 +138,21 @@ async function main(argv: string[]) {
   };
   const [cmd, ...rest] = positionals;
   if (cmd === "mcp") return (await import("./mcp")).serve(cookies);
+  if (cmd === "item") {
+    if (!rest.length) throw new UsageError("Missing item id or URL");
+    if (rest.length > MAX_ITEMS) throw new UsageError(`At most ${MAX_ITEMS} items at a time`);
+    const include = fieldList<ItemField>(values.include, ITEM_FIELDS, ["specs", "description"]);
+    const session = new Session(cookies);
+    try {
+      const result = await session.items(rest, include);
+      if (values.json) console.log(JSON.stringify(result.errors.length ? result : { items: result.items }, null, 2));
+      else printItems(result);
+      if (!result.items.length) process.exitCode = 1;
+    } finally {
+      await session.close();
+    }
+    return;
+  }
   if (cmd !== "search") throw new UsageError(cmd ? `Unknown command: ${cmd}` : "Missing command");
   const query = rest.join(" ").trim();
   if (!query) throw new UsageError("Missing search query");
@@ -109,8 +171,10 @@ async function main(argv: string[]) {
   const session = new Session(cookies);
   try {
     const result = await session.search(query, opts);
-    if (values.json) console.log(JSON.stringify(result, null, 2));
-    else printTable(result);
+    const include = fieldList<ExtraField>(values.include, EXTRA_FIELDS, []);
+    if (values.json) {
+      console.log(JSON.stringify({ ...result, products: result.products.map((p) => withExtras(p, include)) }, null, 2));
+    } else printTable(result);
   } finally {
     await session.close();
   }
