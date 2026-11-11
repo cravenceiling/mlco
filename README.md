@@ -40,11 +40,11 @@ into its headless browser. The cookies stay on your machine and only go to Merca
 ## Install
 
 ```sh
-git clone https://github.com/cravenceiling/mlco.git
-cd mlco
-bun install
-ln -s "$PWD/src/cli.ts" ~/.local/bin/mlco
+bun add -g mlco
 ```
+
+Or run it without installing, as `bunx mlco search …`. mlco runs on Bun, so `npx mlco` works only when Bun
+is installed too.
 
 mlco runs your installed Brave, Chrome or Chromium headless, preferring the one your session comes from.
 Snap and Flatpak builds are sandboxed and can't be driven this way. If you only have one of those, or no
@@ -140,7 +140,7 @@ returns structured content and the same JSON, unindented, as text.
 Claude Code:
 
 ```sh
-claude mcp add mercadolibre-co -s user -- ~/.local/bin/mlco mcp
+claude mcp add mercadolibre-co -s user -- bunx mlco mcp
 ```
 
 Other clients (Claude Desktop, Cursor, and so on):
@@ -148,12 +148,14 @@ Other clients (Claude Desktop, Cursor, and so on):
 ```json
 {
   "mcpServers": {
-    "mercadolibre-co": { "command": "/home/you/.local/bin/mlco", "args": ["mcp"] }
+    "mercadolibre-co": { "command": "bunx", "args": ["mlco", "mcp"] }
   }
 }
 ```
 
-Add `"--browser", "chrome"` or `"--profile", "Profile 1"` to `args` to pick the session.
+Add `"--browser", "chrome"` or `"--profile", "Profile 1"` to `args` to pick the session. The first `bunx`
+run downloads mlco and its dependencies, which can outlast a client's start-up timeout; run `bunx mlco
+--help` once beforehand, or use `bun add -g mlco` and `"command": "mlco"`.
 
 ## Troubleshooting
 
@@ -167,6 +169,8 @@ Add `"--browser", "chrome"` or `"--profile", "Profile 1"` to `args` to pick the 
 ## Development
 
 ```sh
+git clone https://github.com/cravenceiling/mlco.git
+cd mlco
 bun install
 bun run typecheck
 bun test

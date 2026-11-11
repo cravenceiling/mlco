@@ -30,7 +30,8 @@
     "mlco": "src/cli.ts"
   },
   "files": [
-    "src"
+    "src",
+    "!src/**/*.test.ts"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
