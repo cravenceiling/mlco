@@ -1,11 +1,21 @@
 // Pure parsing of a Mercado Libre item page (articulo…/MCO-…, /p/…, /up/…) into one listing's facts.
 import { z } from "zod";
-import { extractPageState, normalizeCondition, prune } from "./parse";
+import { extractPageState, normalizeCondition, prune, wholePesos } from "./parse";
+import { parseReviewHighlights, ReviewHighlights } from "./reviews";
 
 export const ShippingOption = z.object({
   text: z.string().describe('e.g. "Llega el lunes", "Retira a partir del lunes en una agencia de Mercado Libre"'),
   cost: z.number().optional().describe("Integer COP; 0 when free. Absent when the page shows no price"),
   note: z.string().optional().describe('e.g. "Envío desde USA"'),
+});
+
+export const Seller = z.object({
+  id: z.number().optional(),
+  name: z.string(),
+  officialStore: z.literal(true).optional(),
+  mercadoLider: z.string().optional().describe("platinum, gold or silver"),
+  reputation: z.string().optional().describe('Reputation thermometer, best is "5_green"'),
+  sales: z.string().optional().describe('e.g. "+10 mil ventas"'),
 });
 
 export const Item = z.object({
@@ -24,20 +34,16 @@ export const Item = z.object({
   sold: z.number().optional().describe("Units this listing has sold"),
   rating: z.number().optional(),
   reviews: z.number().optional(),
-  seller: z.object({
-    id: z.number().optional(),
-    name: z.string(),
-    officialStore: z.literal(true).optional(),
-    mercadoLider: z.string().optional().describe("platinum, gold or silver"),
-    reputation: z.string().optional().describe('Reputation thermometer, best is "5_green"'),
-    sales: z.string().optional().describe('e.g. "+10 mil ventas"'),
-  }),
+  seller: Seller,
   shipping: z.object({
     to: z.string().optional().describe("City of the signed-in session's address that the options are quoted for"),
     options: z.array(ShippingOption),
     full: z.literal(true).optional().describe("Stored and shipped by Mercado Libre (Full)"),
   }),
-  otherOffers: z.string().optional().describe('Catalog pages: e.g. "2 productos nuevos desde $2.739.000"'),
+  otherOffers: z
+    .string()
+    .optional()
+    .describe('Catalog pages: e.g. "2 productos nuevos desde $2.739.000"; get_offers lists them'),
   international: z
     .object({
       from: z.string().optional().describe("Seller location code, e.g. USTX01"),
@@ -48,20 +54,22 @@ export const Item = z.object({
   returns: z.string().optional(),
   specs: z.record(z.string(), z.string()).optional().describe("Technical specifications as label: value"),
   description: z.string().optional(),
+  reviewHighlights: ReviewHighlights.optional().describe("Only with include: reviews"),
 });
 export type Item = z.infer<typeof Item>;
 
 /** Optional sections of an item; specs and description are the bulk of it. */
-export const ITEM_FIELDS = ["specs", "description", "installments"] as const;
+export const ITEM_FIELDS = ["specs", "description", "reviews", "installments"] as const;
+export const DEFAULT_ITEM_FIELDS = ["specs", "description", "reviews"] as const;
 export type ItemField = (typeof ITEM_FIELDS)[number];
 
 // The page state is loosely typed and shifts often; read it defensively.
 type Json = any;
 
-const itemUrl = (id: string) => `https://articulo.mercadolibre.com.co/${id.replace(/^MCO/, "MCO-")}`;
+export const itemUrl = (id: string) => `https://articulo.mercadolibre.com.co/${id.replace(/^MCO/, "MCO-")}`;
 
 /** Fill an item-page template like "{action} Tienes 30 días" from its `values` object. */
-function fill(t: Json): string | undefined {
+export function fill(t: Json): string | undefined {
   if (!t?.text) return undefined;
   const text = String(t.text).replace(/\{(\w+)\}/g, (_: string, key: string) => {
     const v = t.values?.[key];
@@ -134,7 +142,7 @@ function benefits(c: Json): string[] {
 }
 
 /** Parse an item page, or return null when it holds no listing (removed, paused or not an item page). */
-export function parseItemPage(html: string, include: readonly ItemField[] = ["specs", "description"]): Item | null {
+export function parseItemPage(html: string, include: readonly ItemField[] = DEFAULT_ITEM_FIELDS): Item | null {
   const state = extractPageState(html);
   const c: Json = state?.components;
   const track: Json = c?.track?.melidata_event?.event_data;
@@ -158,7 +166,7 @@ export function parseItemPage(html: string, include: readonly ItemField[] = ["sp
     variant: variant(c),
     price: price.value,
     currency: currency === "COP" ? undefined : currency,
-    originalPrice: price.original_value ?? undefined,
+    originalPrice: wholePesos(price.original_value, currency),
     discountPct: c.price.discount_label?.value,
     installments: include.includes("installments") ? fill(c.price.subtitles?.[0]) : undefined,
     stock: c.available_quantity?.quantity_selector?.available_quantity ?? track.quantity,
@@ -190,5 +198,6 @@ export function parseItemPage(html: string, include: readonly ItemField[] = ["sp
     returns: perks.find((t) => /devoluci|devolver|d[ií]as desde que lo recibes/i.test(t)),
     specs: include.includes("specs") ? specsRecord(findSpecs(c)) : undefined,
     description: include.includes("description") ? c.description?.content?.trim() : undefined,
+    reviewHighlights: include.includes("reviews") ? parseReviewHighlights(c.reviews_capability_v3) : undefined,
   }) as Item;
 }

@@ -56,6 +56,7 @@ const state = {
       ],
     },
     description: { content: "  Garantía de fábrica: 12 meses\n" },
+    reviews_capability_v3: { state: "VISIBLE", rating: { levels: [{ value: 5 }] }, reviews: [{ rating: 5, comment: { content: { text: "Rápido" } } }] },
     cbt_taxes_summary: { state: "HIDDEN" },
     track: {
       melidata_event: {
@@ -98,10 +99,11 @@ describe("parseItemPage", () => {
   });
 
   test("adds the optional sections only when asked", () => {
-    const item = parseItemPage(page(state), ["specs", "description", "installments"]);
+    const item = parseItemPage(page(state), ["specs", "description", "reviews", "installments"]);
     expect(item?.specs).toEqual({ "Modelo alfanumérico": "15AHP10", "Memoria RAM": "24 GB" });
     expect(item?.description).toBe("Garantía de fábrica: 12 meses");
     expect(item?.installments).toBe("12 cuotas de $205.309 con 0% interés");
+    expect(item?.reviewHighlights).toEqual({ stars: { "5": 5 }, top: [{ rating: 5, text: "Rápido" }] });
   });
 
   test("flags cross-border listings and their import-cost note", () => {

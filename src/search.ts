@@ -3,8 +3,10 @@ import { existsSync } from "node:fs";
 import { chromium, errors, type Browser, type BrowserContext, type Page } from "playwright-core";
 import { installedBrowsers, type BrowserName } from "./browsers";
 import { loadCookies, type CookieOptions } from "./cookies";
-import { parseItemPage, type Item, type ItemField } from "./item";
+import { DEFAULT_ITEM_FIELDS, parseItemPage, type Item, type ItemField } from "./item";
+import { OFFERS_PAGE_SIZE, parseOffersPage, type Offer } from "./offers";
 import { parseSearchPage, type Product } from "./parse";
+import { parseReview, REVIEWS_PAGE_SIZE, reviewsUrl, type Review, type ReviewSort } from "./reviews";
 
 const BASE = "https://listado.mercadolibre.com.co";
 export const PAGE_SIZE = 48;
@@ -14,8 +16,10 @@ export const MAX_LIMIT = 200;
 const MAX_OPEN_PAGES = 2;
 export const SORTS = { relevance: "", price_asc: "_OrderId_PRICE", price_desc: "_OrderId_PRICE*DESC" } as const;
 export const CONDITIONS = { new: "_ITEM*CONDITION_2230284", used: "_ITEM*CONDITION_2230581" } as const;
+export const ORIGINS = { local: "_SHIPPING*ORIGIN_10215068", international: "_SHIPPING*ORIGIN_10215069" } as const;
 export type Sort = keyof typeof SORTS;
 export type Condition = keyof typeof CONDITIONS;
+export type Origin = keyof typeof ORIGINS;
 
 // Must match the real Chromium major version or Mercado Libre serves a captcha wall.
 const userAgent = (version: string) =>
@@ -35,6 +39,12 @@ export type SearchOptions = {
   maxPrice?: number;
   condition?: Condition;
   freeShipping?: boolean;
+  origin?: Origin;
+  officialStore?: boolean;
+  /** Stored and shipped by Mercado Libre. */
+  full?: boolean;
+  /** MercadoLíder sellers only. */
+  bestSellers?: boolean;
 };
 
 export type SearchResult = { query: string; url: string; total: number | null; products: Product[] };
@@ -53,6 +63,10 @@ export function buildUrl(query: string, page: number, o: SearchOptions = {}): st
   const parts = [slug(query)];
   if (o.condition) parts.push(CONDITIONS[o.condition]);
   if (o.freeShipping) parts.push("_CostoEnvio_Gratis");
+  if (o.full) parts.push("_Envio_Full");
+  if (o.officialStore) parts.push("_Tienda_all");
+  if (o.bestSellers) parts.push("_BestSellers_YES");
+  if (o.origin) parts.push(ORIGINS[o.origin]);
   if (o.minPrice || o.maxPrice) parts.push(`_PriceRange_${o.minPrice ?? 0}-${o.maxPrice ?? 0}`);
   if (page > 1) parts.push(`_Desde_${(page - 1) * PAGE_SIZE + 1}`);
   parts.push(SORTS[o.sort ?? "relevance"], "_NoIndex_True");
@@ -61,6 +75,8 @@ export function buildUrl(query: string, page: number, o: SearchOptions = {}): st
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const jitter = () => sleep(1500 + Math.random() * 2000);
+/** Review pages are small JSON requests the site itself fires while scrolling, so a shorter pause is enough. */
+const shortJitter = () => sleep(300 + Math.random() * 500);
 
 const NOT_INSTALLED =
   "No browser to run. Install Brave, Chrome or Chromium, run `bunx playwright-core install chromium-headless-shell`, " +
@@ -209,7 +225,7 @@ export class Session {
    * at a human pace within each. One failed listing is reported in `errors` instead of failing the rest;
    * a captcha or sign-in wall fails the whole call, since every later page would hit it too.
    */
-  async items(inputs: string[], include: readonly ItemField[] = ["specs", "description"]): Promise<ItemsResult> {
+  async items(inputs: string[], include: readonly ItemField[] = DEFAULT_ITEM_FIELDS): Promise<ItemsResult> {
     if (!inputs.length || inputs.length > MAX_ITEMS) throw new RangeError(`Pass 1 to ${MAX_ITEMS} items`);
     const results: (Item | ItemError)[] = new Array(inputs.length);
     const pending: { i: number; url: string }[] = [];
@@ -240,10 +256,68 @@ export class Session {
       errors: results.filter((r): r is ItemError => "error" in r),
     };
   }
+
+  /** Every seller's offer for one catalog product, as Mercado Libre's "Otras opciones de compra" list orders them. */
+  async offers(product: string, limit = OFFERS_PAGE_SIZE): Promise<OffersResult> {
+    if (!Number.isInteger(limit) || limit < 1 || limit > MAX_OFFERS) {
+      throw new RangeError(`limit must be a whole number from 1 to ${MAX_OFFERS}`);
+    }
+    const id = catalogProductId(product);
+    const offers: Offer[] = [];
+    let title: string | undefined;
+    await this.withPage(async (page) => {
+      for (let n = 1; offers.length < limit; n++) {
+        if (n > 1) await jitter();
+        const url = `https://www.mercadolibre.com.co/p/${id}/s?page=${n}`;
+        const parsed = parseOffersPage(await loadPage(page, url));
+        if (!parsed) throw new Error(`No offers list on ${page.url()}; ${id} may not be a catalog product id.`);
+        title ??= parsed.title;
+        offers.push(...parsed.offers);
+        if (!parsed.offers.length || n >= parsed.totalPages) break;
+      }
+    });
+    return { catalogProductId: id, title, offers: offers.slice(0, limit) };
+  }
+
+  /**
+   * Reviews of a catalog product or of a listing outside the catalog. The endpoint keys catalog reviews by product
+   * and the rest by item, and an id alone does not say which it is, so an empty product answer retries as an item.
+   */
+  async reviews(id: string, o: { rating?: number; sort?: ReviewSort; limit?: number } = {}): Promise<ReviewsResult> {
+    const limit = o.limit ?? REVIEWS_PAGE_SIZE;
+    if (!Number.isInteger(limit) || limit < 1 || limit > MAX_REVIEWS) {
+      throw new RangeError(`limit must be a whole number from 1 to ${MAX_REVIEWS}`);
+    }
+    if (o.rating !== undefined && !(Number.isInteger(o.rating) && o.rating >= 1 && o.rating <= 5)) {
+      throw new RangeError("rating must be a whole number from 1 to 5");
+    }
+    const objectId = reviewsObjectId(id);
+    const reviews: Review[] = [];
+    await this.withPage(async (page) => {
+      let isItem = false;
+      for (let offset = 0; reviews.length < limit; offset += REVIEWS_PAGE_SIZE) {
+        if (offset) await shortJitter();
+        let batch = await loadReviews(page, reviewsUrl(objectId, isItem, { ...o, offset }));
+        if (!offset && !batch.length) {
+          isItem = true;
+          batch = await loadReviews(page, reviewsUrl(objectId, isItem, { ...o, offset }));
+        }
+        reviews.push(...batch.map(parseReview));
+        if (batch.length < REVIEWS_PAGE_SIZE) break;
+      }
+    });
+    return { id: objectId, reviews: reviews.slice(0, limit) };
+  }
 }
 
 /** Ten listings take about half a minute, which stays under typical MCP client timeouts. */
 export const MAX_ITEMS = 10;
+/** Five offers pages. */
+export const MAX_OFFERS = 5 * OFFERS_PAGE_SIZE;
+/** Four review requests. */
+export const MAX_REVIEWS = 4 * REVIEWS_PAGE_SIZE;
+export type OffersResult = { catalogProductId: string; title?: string; offers: Offer[] };
+export type ReviewsResult = { id: string; reviews: Review[] };
 export type ItemError = { input: string; error: string };
 export type ItemsResult = { items: Item[]; errors: ItemError[] };
 
@@ -301,6 +375,33 @@ export function itemPageUrl(input: string): string {
     throw new RangeError(`Only https://…mercadolibre.com.co URLs are allowed: ${input}`);
   }
   return url.toString();
+}
+
+const CATALOG_ID = /^MCO\d{6,}$/i;
+const PRODUCT_PATH = /\/p\/(MCO\d{6,})/i;
+
+/** A catalog product id (MCO37690980) or a /p/ URL, such as an item's catalogProductId or a search result's link. */
+export function catalogProductId(input: string): string {
+  const s = input.trim();
+  const id = CATALOG_ID.test(s) ? s : PRODUCT_PATH.exec(s)?.[1];
+  if (!id) throw new RangeError(`Not a catalog product id or /p/ URL: ${input}`);
+  return id.toUpperCase();
+}
+
+/** The id the reviews endpoint wants: a catalog product id, an item id (MCO-123 too) or a listing URL. */
+export function reviewsObjectId(input: string): string {
+  // Only the id is used, never the URL, so any host is fine. A /p/ id wins over id-like text in the slug.
+  const id = PRODUCT_PATH.exec(input)?.[1] ?? /MCO-?\d{6,}/i.exec(input)?.[0];
+  if (!id) throw new RangeError(`Not an item id, catalog product id or URL: ${input}`);
+  return id.toUpperCase().replace("-", "");
+}
+
+async function loadReviews(page: Page, url: string): Promise<unknown[]> {
+  const response = await page.goto(url, { waitUntil: "commit", timeout: 20_000 });
+  throwIfBlocked(page);
+  if (!response?.ok()) throw new Error(`Reviews request failed with HTTP ${response?.status()} for ${url}`);
+  const body = (await response.json()) as { reviews?: unknown[] };
+  return body.reviews ?? [];
 }
 
 async function loadItemPage(page: Page, url: string, include: readonly ItemField[]): Promise<Item> {
