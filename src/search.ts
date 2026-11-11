@@ -37,7 +37,7 @@ export type SearchOptions = {
   freeShipping?: boolean;
 };
 
-export type SearchResult = { query: string; url: string; total: number | null; products: Product[] };
+export type SearchResult = { query: string; url: string; total: number | null; notice?: string; products: Product[] };
 
 export class BlockedError extends Error {}
 
@@ -183,12 +183,14 @@ export class Session {
     }
     const products = new Map<string, Product>();
     let total: number | null = null;
+    let notice: string | undefined;
     let skipped = 0;
     await this.withPage(async (page) => {
       for (let n = 1; products.size < limit; n++) {
         if (n > 1) await jitter();
         const result = await loadSearchPage(page, buildUrl(query, n, o));
         total ??= result.total;
+        notice ??= result.notice;
         skipped += result.skipped;
         for (const p of result.products) {
           // The free-shipping filter guarantees it even when a card omits the label.
@@ -201,7 +203,7 @@ export class Session {
       throw new Error("Could not read any listing on the results page; Mercado Libre may have changed its format.");
     }
     if (skipped) console.error(`mlco: skipped ${skipped} listing(s) that could not be read.`);
-    return { query, url: buildUrl(query, 1, o), total, products: [...products.values()].slice(0, limit) };
+    return { query, url: buildUrl(query, 1, o), total, notice, products: [...products.values()].slice(0, limit) };
   }
 
   /**
