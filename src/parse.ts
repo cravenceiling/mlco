@@ -36,6 +36,8 @@ export type SearchPage = {
   skipped: number;
   total: number | null;
   lastPage: number;
+  /** Why the listings Mercado Libre showed were left out, when they do not match the query or filters. */
+  notice?: string;
 };
 
 // Polycard JSON is loosely typed and shifts often; read it defensively.
@@ -195,6 +197,22 @@ export function toProduct(card: Json): Product {
 export function parseSearchPage(html: string): SearchPage | null {
   const state = extractPageState(html);
   if (!state) return null;
+  const total: number | null = state.melidata_track?.event_data?.total ?? null;
+  // With no exact match, Mercado Libre fills the page anyway: related listings under a total of 0, or, behind a
+  // "No encontramos … en Full" banner, listings with a requested filter silently dropped. Neither answers the search.
+  const dropped = (state.results ?? []).find((r: Json) => r.id === "ZRP_DISCLAIMER_COMPONENT");
+  if (dropped || total === 0) {
+    const banner = dropped && [dropped.title?.all_text, dropped.subtitle?.all_text].filter(Boolean).join(". ");
+    return {
+      products: [],
+      skipped: 0,
+      total: 0,
+      lastPage: 1,
+      notice: banner
+        ? `No listing matches every filter. Mercado Libre said "${banner}"; those listings are left out. Retry with fewer filters.`
+        : `No listing matches.${state.results?.length ? " The related listings Mercado Libre suggested instead are left out." : ""}`,
+    };
+  }
   // Skip sponsored cards and anything that is not a priced listing.
   const listings = (state.results ?? [])
     .map((r: Json) => r.polycard)
@@ -211,10 +229,5 @@ export function parseSearchPage(html: string): SearchPage | null {
       skipped++;
     }
   }
-  return {
-    products,
-    skipped,
-    total: state.melidata_track?.event_data?.total ?? null,
-    lastPage: state.pagination?.last_page ?? 1,
-  };
+  return { products, skipped, total, lastPage: state.pagination?.last_page ?? 1 };
 }

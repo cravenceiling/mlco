@@ -75,6 +75,10 @@ export async function serve(cookieOptions: CookieOptions) {
         query: z.string(),
         url: z.string(),
         total: z.number().nullable(),
+        notice: z
+          .string()
+          .optional()
+          .describe("Present when nothing matched and Mercado Libre's fallback listings were left out"),
         products: z.array(Product),
       },
       annotations: { readOnlyHint: true, openWorldHint: true },

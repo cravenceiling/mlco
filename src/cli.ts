@@ -149,6 +149,7 @@ function printReviews(reviews: Review[]) {
 function printTable(r: SearchResult) {
   console.log(`'${r.query}': ${r.total ?? "?"} results on Mercado Libre CO, showing ${r.products.length}`);
   console.log(`${r.url}\n`);
+  if (r.notice) console.log(r.notice);
   r.products.forEach((p: Product, i) => {
     const disc = p.discountPct ? ` (-${p.discountPct}%, was ${cop(p.originalPrice)})` : "";
     const tags = [
