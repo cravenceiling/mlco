@@ -13,7 +13,7 @@ export type Review = z.infer<typeof Review>;
 
 export const ReviewHighlights = z.object({
   summary: z.string().optional().describe("Mercado Libre's AI-generated summary of all reviews"),
-  stars: z.record(z.string(), z.number()).optional().describe('Reviews per star rating, e.g. { "5": 29, "4": 2, ... }'),
+  stars: z.record(z.string(), z.number()).optional().describe('Ratings per star, including ratings without text, e.g. { "1": 0, "2": 0, "3": 1, "4": 2, "5": 29 }'),
   top: z
     .array(Review)
     .optional()

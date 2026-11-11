@@ -155,7 +155,7 @@ function printTable(r: SearchResult) {
       p.condition !== "new" && p.condition,
       p.officialStore && `official store ${p.officialStore}`,
       p.rating && `★${p.rating}`,
-      p.sold && `+${p.sold.toLocaleString("es-CO")} vendidos`,
+      p.sold && (p.sold === 1 ? "1 vendido" : `+${p.sold.toLocaleString("es-CO")} vendidos`),
       p.shipping,
       p.international,
       p.purchaseOptions,

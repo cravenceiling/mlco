@@ -23,4 +23,5 @@ test("search cards give sold as a number and prices as whole pesos", () => {
   expect(toProduct(card("+1000 vendidos")).sold).toBe(1000);
   expect(toProduct(card("1 vendido")).sold).toBe(1);
   expect(toProduct(card("+1,5 mil vendidos")).sold).toBe(1500);
+  expect(toProduct(card("+1M vendidos")).sold).toBe(1_000_000);
 });

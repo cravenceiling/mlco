@@ -159,8 +159,10 @@ export function toProduct(card: Json): Product {
     .map((v: Json) => v.label.text);
   const rating = reviewLabels.find((t) => /^\d(\.\d)?$/.test(t));
   const sold = reviewLabels.find((t) => t.includes("vendido"));
-  // "+50 vendidos", "+5mil vendidos", "+1,5 mil vendidos": dots group thousands, a comma marks decimals.
-  const soldCount = sold && /([\d.,]+)\s*(mil)?/i.exec(sold);
+  // "+50 vendidos", "+5mil vendidos", "+1,5 mil vendidos", "+1M vendidos": dots group thousands, a comma marks
+  // decimals.
+  const soldCount = sold && /([\d.,]+)\s*(?:(mil|m)\b)?/i.exec(sold);
+  const soldUnit = !soldCount?.[2] ? 1 : soldCount[2].toLowerCase() === "m" ? 1e6 : 1e3;
   const shipping = (comps.shipping_v2 ?? []).map((s: Json) => s.alt_text || templateText(s)).filter(Boolean).join(" · ") || undefined;
   const currency = price.current_price.currency ?? "COP";
   const pictureId = card.pictures?.pictures?.[0]?.id;
@@ -177,7 +179,7 @@ export function toProduct(card: Json): Product {
     officialStore,
     rating: rating ? Number(rating) : undefined,
     sold: soldCount
-      ? Math.round(Number(soldCount[1]!.replace(/\./g, "").replace(",", ".")) * (soldCount[2] ? 1000 : 1))
+      ? Math.round(Number(soldCount[1]!.replace(/\./g, "").replace(",", ".")) * soldUnit)
       : undefined,
     shipping,
     international: comps.cbt?.alt_text,

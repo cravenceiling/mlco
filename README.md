@@ -87,7 +87,7 @@ mlco reviews <id|url> [options]          a catalogProductId, or the item id of a
   -s, --sort ORDER       relevance | newest
       --json             print JSON instead of a list
 
-Session options, for both:
+Session options, for every command:
       --browser B        auto | none | brave | chrome | chromium (default auto)
       --profile P        browser profile name, e.g. "Profile 1", or a path (default "Default")
 ```
@@ -111,9 +111,10 @@ sells any other listing, open it with `mlco item`.
 `officialStore`, `mercadoLider`, `reputation`, `sales`), `stock`, `sold`, `rating`, `reviews`, `variant`,
 `shipping` (`to`: the city of your signed-in address, `options`: `{ text, cost, note }`, `full`),
 `international` (origin and the import-cost note), `warranty`, `returns`, `otherOffers`, `specs`,
-`description` and `reviewHighlights` (`summary`: Mercado Libre's AI summary of the reviews, `stars`: reviews
-per star rating, `top`: the up to five reviews the page shows). `price` is the cash price any buyer pays, without coupons or card offers. A listing that cannot
-be read goes in `errors` and does not fail the others.
+`description` and `reviewHighlights` (`summary`: Mercado Libre's AI summary of the reviews, `stars`: ratings
+per star, including those without text, `top`: the up to five reviews the page shows). `price` is the cash
+price any buyer pays, without coupons or card offers. A listing that cannot be read goes in `errors` and does
+not fail the others.
 
 `offers --json` prints `{ catalogProductId, title, offers }`. Each offer has `id`, `url`, the price fields,
 `condition`, `seller` (as in `item`), `shipping`, and when shown `international`, `warranty` (the seller's)
@@ -178,8 +179,8 @@ bun src/cli.ts reviews MCO37690980 --rating 1
 `bun install` sets up a [husky](https://typicode.github.io/husky) pre-commit hook that runs the typecheck.
 
 The code lives in `src/`: `cli.ts` (command line), `mcp.ts` (MCP server), `search.ts` (browser, paging
-and opening items), `parse.ts` (results page to products), `item.ts` (item page to one listing), `offers.ts` (offers page to
-sellers), `reviews.ts` (reviews to plain records) and `cookies.ts` (reading browser cookies).
+and opening items), `parse.ts` (results page to products), `item.ts` (item page to one listing), `offers.ts`
+(offers page to sellers), `reviews.ts` (reviews to plain records) and `cookies.ts` (reading browser cookies).
 
 ## Disclaimer
 
