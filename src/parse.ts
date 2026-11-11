@@ -14,7 +14,7 @@ export const Product = z.object({
     .optional()
     .describe("Official store name. Search pages name no other sellers; get_items returns the seller of any listing"),
   rating: z.number().optional(),
-  sold: z.string().optional().describe('e.g. "+100 vendidos"'),
+  sold: z.number().optional().describe('Units sold, a lower bound: the card shows "+100 vendidos"'),
   shipping: z.string().optional().describe('e.g. "Envío gratis"'),
   international: z.string().optional().describe('Cross-border listing, e.g. "Internacional USA"'),
   promotions: z.array(z.string()).optional(),
@@ -112,6 +112,12 @@ export function prune<T>(value: T): T {
   return value;
 }
 
+/** Some previous prices carry centavos (51109.01) although COP prices are whole pesos; other currencies keep theirs. */
+export function wholePesos(value: number | null | undefined, currency: string): number | undefined {
+  if (value == null) return undefined;
+  return currency === "COP" ? Math.round(value) : value;
+}
+
 /** Leave out the extra card fields the caller did not ask for. */
 export function withExtras(p: Product, include: readonly ExtraField[] = []): Product {
   const out = { ...p };
@@ -153,6 +159,10 @@ export function toProduct(card: Json): Product {
     .map((v: Json) => v.label.text);
   const rating = reviewLabels.find((t) => /^\d(\.\d)?$/.test(t));
   const sold = reviewLabels.find((t) => t.includes("vendido"));
+  // "+50 vendidos", "+5mil vendidos", "+1,5 mil vendidos", "+1M vendidos": dots group thousands, a comma marks
+  // decimals.
+  const soldCount = sold && /([\d.,]+)\s*(?:(mil|m)\b)?/i.exec(sold);
+  const soldUnit = !soldCount?.[2] ? 1 : soldCount[2].toLowerCase() === "m" ? 1e6 : 1e3;
   const shipping = (comps.shipping_v2 ?? []).map((s: Json) => s.alt_text || templateText(s)).filter(Boolean).join(" · ") || undefined;
   const currency = price.current_price.currency ?? "COP";
   const pictureId = card.pictures?.pictures?.[0]?.id;
@@ -163,12 +173,14 @@ export function toProduct(card: Json): Product {
     title: comps.title.text,
     price: price.current_price.value,
     currency: currency === "COP" ? undefined : currency,
-    originalPrice: previous,
+    originalPrice: wholePesos(previous, currency),
     discountPct: price.discount_pct,
     condition: normalizeCondition(comps.item_condition?.text),
     officialStore,
     rating: rating ? Number(rating) : undefined,
-    sold: sold?.replace(/^[\s|]+/, ""),
+    sold: soldCount
+      ? Math.round(Number(soldCount[1]!.replace(/\./g, "").replace(",", ".")) * soldUnit)
+      : undefined,
     shipping,
     international: comps.cbt?.alt_text,
     promotions: (comps.promotions ?? []).map((p: Json) => p.text),
