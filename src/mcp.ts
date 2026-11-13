@@ -38,7 +38,7 @@ const fail = (e: unknown) => {
 export async function serve(cookieOptions: CookieOptions) {
   // One warm browser shared by all calls; closed after 5 idle minutes.
   const session = new Session(cookieOptions, IDLE_MS);
-  const server = new McpServer({ name: "mercadolibre-co", version: pkg.version });
+  const server = new McpServer({ name: "mlco", version: pkg.version });
 
   server.registerTool(
     "search_products",

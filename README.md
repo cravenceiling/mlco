@@ -140,7 +140,7 @@ returns structured content and the same JSON, unindented, as text.
 Claude Code:
 
 ```sh
-claude mcp add mercadolibre-co -s user -- bunx @cravenceiling/mlco mcp
+claude mcp add mlco -s user -- bunx @cravenceiling/mlco mcp
 ```
 
 Other clients (Claude Desktop, Cursor, and so on):
@@ -148,7 +148,7 @@ Other clients (Claude Desktop, Cursor, and so on):
 ```json
 {
   "mcpServers": {
-    "mercadolibre-co": { "command": "bunx", "args": ["@cravenceiling/mlco", "mcp"] }
+    "mlco": { "command": "bunx", "args": ["@cravenceiling/mlco", "mcp"] }
   }
 }
 ```
